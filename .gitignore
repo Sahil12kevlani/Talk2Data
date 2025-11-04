@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Environment
+.env
+venv/
+.venv/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# Byte-compiled / compiled files
+*.so
+*.dll
+*.exe
+
+# Cache
+*.egg-info/
+dist/
+build/
+
+# Poetry
+poetry.lock
