@@ -1,30 +1,20 @@
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
 *.pyd
-*.db
-*.sqlite3
+venv/
+.venv/
 
 # Environment
 .env
-venv/
-.venv/
-*.log
 
-# IDE
+# Node / Frontend
+Talk2Data Frontend/node_modules/
+Talk2Data Frontend/dist/
+Talk2Data Frontend/build/
+
+# IDE and cache
 .vscode/
 .idea/
-
-# Byte-compiled / compiled files
-*.so
-*.dll
-*.exe
-
-# Cache
-*.egg-info/
-dist/
-build/
-
-# Poetry
-poetry.lock
+*.log
