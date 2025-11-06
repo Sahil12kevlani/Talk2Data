@@ -4,6 +4,7 @@ import warnings
 from typing import List
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+from app.db.multidb_manager import refresh_databases
 import numpy as np
 from sqlalchemy import exc as sa_exc
 from app.db.multidb_manager import get_db_session, DATABASES
@@ -45,6 +46,7 @@ def build_index(force: bool = False):
     Each DB and table is represented as a semantic vector.
     """
     global _VECTOR_INDEX, _LAST_INDEX_BUILD
+    refresh_databases() 
 
     with _INDEX_LOCK:
         if not force and (time.time() - _LAST_INDEX_BUILD) < _INDEX_TTL and _VECTOR_INDEX:

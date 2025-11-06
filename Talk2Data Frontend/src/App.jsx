@@ -1,6 +1,7 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import axios from "axios";
 import * as XLSX from "xlsx";
+import "./App.css";
 import {
   BarChart,
   Bar,
@@ -16,234 +17,303 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
-function App() {
-  const [query, setQuery] = useState("");
-  const [response, setResponse] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [chartType, setChartType] = useState("bar");
-  const [xKey, setXKey] = useState("");
-  const [yKey, setYKey] = useState("");
+// 🎨 Chart Renderer — shared utility
+function renderChart(mergedData, chartType, xKey, yKey) {
+  if (!mergedData?.length || !xKey || !yKey)
+    return <p className="placeholder">Select X and Y fields.</p>;
 
-  // === Handle Query Submission ===
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!query.trim()) return;
-    setLoading(true);
-    setResponse(null);
-
-    try {
-      const res = await axios.post(
-        `http://127.0.0.1:8000/api/multi-db-query?query=${encodeURIComponent(query)}`
+  switch (chartType) {
+    case "bar":
+      return (
+        <BarChart data={mergedData}>
+          <XAxis dataKey={xKey} stroke="#2E2A27" />
+          <YAxis stroke="#2E2A27" />
+          <Tooltip />
+          <Legend />
+          <Bar dataKey={yKey} fill="#4B584E" radius={[6, 6, 0, 0]} />
+        </BarChart>
       );
-      setResponse(res.data);
-    } catch (error) {
-      setResponse({ status: "error", message: error.message });
-    } finally {
-      setLoading(false);
-    }
-  };
+    case "line":
+      return (
+        <LineChart data={mergedData}>
+          <XAxis dataKey={xKey} stroke="#2E2A27" />
+          <YAxis stroke="#2E2A27" />
+          <Tooltip />
+          <Legend />
+          <Line
+            type="monotone"
+            dataKey={yKey}
+            stroke="#2E4D30"
+            strokeWidth={2}
+          />
+        </LineChart>
+      );
+    case "pie":
+      return (
+        <PieChart>
+          <Pie
+            data={mergedData}
+            dataKey={yKey}
+            nameKey={xKey}
+            cx="50%"
+            cy="50%"
+            outerRadius={110}
+            fill="#4B584E"
+            label
+          >
+            {mergedData.map((_, i) => (
+              <Cell
+                key={i}
+                fill={["#4B584E", "#2E4D30", "#A58E74", "#B2A38D"][i % 4]}
+              />
+            ))}
+          </Pie>
+          <Tooltip />
+          <Legend />
+        </PieChart>
+      );
+    default:
+      return <p>Unsupported chart type.</p>;
+  }
+}
 
-  // === Excel Download ===
-  const downloadExcel = (data) => {
-    if (!data || data.length === 0) {
-      alert("No data to download.");
-      return;
-    }
-    const flattened = data.map((row) => ({
-      ...row,
-      _source_dbs: Array.isArray(row._source_dbs)
-        ? row._source_dbs.join(", ")
-        : row._source_dbs,
-    }));
+// 🧠 AI Message Component (handles table + chart)
+// - Keeps its own hook state safely (component-level)
+function AIMessage({ msg }) {
+  // Guarantee merged_results is an array
+  const mergedData = Array.isArray(msg.data?.merged_results)
+    ? msg.data.merged_results
+    : [];
 
+  const keys = mergedData.length ? Object.keys(mergedData[0]) : [];
+  const numericKeys = keys.filter((k) =>
+    mergedData.some((r) => typeof r[k] === "number")
+  );
+  const stringKeys = keys.filter(
+    (k) => typeof mergedData[0]?.[k] === "string"
+  );
+
+  const [chartType, setChartType] = useState("bar");
+  const [xKey, setXKey] = useState(stringKeys[0] || "");
+  const [yKey, setYKey] = useState(numericKeys[0] || "");
+
+  // keep selectors in sync when data changes
+  useEffect(() => {
+    if (!xKey && stringKeys[0]) setXKey(stringKeys[0]);
+    if (!yKey && numericKeys[0]) setYKey(numericKeys[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [msg.data]);
+
+  // Excel Export
+  const downloadExcel = () => {
+    if (!mergedData?.length) return alert("No data to download.");
+    const flattened = mergedData.map((row) => {
+      const cleanRow = {};
+      Object.entries(row).forEach(([k, v]) => {
+        cleanRow[k] =
+          Array.isArray(v)
+            ? v.join(", ")
+            : typeof v === "object" && v !== null
+            ? JSON.stringify(v)
+            : v;
+      });
+      return cleanRow;
+    });
     const ws = XLSX.utils.json_to_sheet(flattened);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Results");
     XLSX.writeFile(wb, "query_results.xlsx");
   };
 
-  // === Extract Possible Chart Keys ===
-  const mergedData = response?.merged_results || [];
-  const keys = mergedData.length > 0 ? Object.keys(mergedData[0]) : [];
+  return (
+    <div className="message ai-msg">
+      <h3>✅ Query executed successfully</h3>
+      <p>
+        <strong>Databases:</strong>{" "}
+        {Array.isArray(msg.data?.selected_databases)
+          ? msg.data.selected_databases.join(", ")
+          : String(msg.data?.selected_databases || "")}
+      </p>
 
-  const numericKeys = keys.filter((key) =>
-    mergedData.some((row) => typeof row[key] === "number")
-  );
-  const stringKeys = keys.filter(
-    (key) => typeof mergedData[0]?.[key] === "string"
-  );
+      {mergedData.length === 0 && (
+        <p className="no-data">No matching records found in any selected databases.</p>
+      )}
 
-  // === Render Chart Dynamically ===
-  const renderChart = () => {
-    if (!xKey || !yKey) return <p>Select X and Y fields to visualize.</p>;
-    switch (chartType) {
-      case "bar":
-        return (
-          <BarChart data={mergedData}>
-            <XAxis dataKey={xKey} stroke="#ccc" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Bar dataKey={yKey} fill="#3b82f6" />
-          </BarChart>
-        );
-      case "line":
-        return (
-          <LineChart data={mergedData}>
-            <XAxis dataKey={xKey} stroke="#ccc" />
-            <YAxis />
-            <Tooltip />
-            <Legend />
-            <Line type="monotone" dataKey={yKey} stroke="#10b981" />
-          </LineChart>
-        );
-      case "pie":
-        return (
-          <PieChart>
-            <Pie
-              data={mergedData}
-              dataKey={yKey}
-              nameKey={xKey}
-              cx="50%"
-              cy="50%"
-              outerRadius={110}
-              fill="#8b5cf6"
-              label
+      {mergedData.length > 0 && (
+        <>
+          <div className="actions-bar">
+            <button className="download-btn" onClick={downloadExcel}>
+              ⬇ Download Excel
+            </button>
+          </div>
+
+          {/* Data Table */}
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  {keys.map((key) => (
+                    <th key={key}>{key}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {mergedData.slice(0, 50).map((row, i) => (
+                  <tr key={i}>
+                    {keys.map((k, j) => (
+                      <td key={j}>{row[k] === null || row[k] === undefined ? "" : String(row[k])}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Chart Controls */}
+          <div className="chart-controls">
+            <select
+              value={chartType}
+              onChange={(e) => setChartType(e.target.value)}
             >
-              {mergedData.map((entry, index) => (
-                <Cell
-                  key={`cell-${index}`}
-                  fill={[
-                    "#3b82f6",
-                    "#10b981",
-                    "#f59e0b",
-                    "#ef4444",
-                    "#8b5cf6",
-                  ][index % 5]}
-                />
+              <option value="bar">Bar</option>
+              <option value="line">Line</option>
+              <option value="pie">Pie</option>
+            </select>
+            <select value={xKey} onChange={(e) => setXKey(e.target.value)}>
+              <option value="">Select X (string)</option>
+              {stringKeys.map((key) => (
+                <option key={key} value={key}>
+                  {key}
+                </option>
               ))}
-            </Pie>
-            <Tooltip />
-            <Legend />
-          </PieChart>
-        );
-      default:
-        return <p>Unsupported chart type.</p>;
+            </select>
+            <select value={yKey} onChange={(e) => setYKey(e.target.value)}>
+              <option value="">Select Y (number)</option>
+              {numericKeys.map((key) => (
+                <option key={key} value={key}>
+                  {key}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Chart Display */}
+          <div className="chart-box">
+            <ResponsiveContainer width="100%" height={300}>
+              {renderChart(mergedData, chartType, xKey, yKey)}
+            </ResponsiveContainer>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// 💬 Main Chat App
+function App() {
+  const [query, setQuery] = useState("");
+  const [messages, setMessages] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const chatEndRef = useRef(null);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // 🔍 Submit query
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!query.trim()) return;
+
+    const userMsg = { type: "user", text: query };
+    setMessages((prev) => [...prev, userMsg]);
+    setQuery("");
+    setLoading(true);
+
+    try {
+      // NOTE: backend expects query as query param in this frontend.
+      // If your backend accepts JSON POST body, change to axios.post(url, { query })
+      const res = await axios.post(
+        `http://127.0.0.1:8000/api/multi-db-query?query=${encodeURIComponent(
+          query
+        )}`
+      );
+
+      const aiMsg = {
+        type: "ai",
+        status: res.data.status,
+        data: res.data,
+        text: res.data.message || "",
+      };
+      setMessages((prev) => [...prev, aiMsg]);
+    } catch (error) {
+      // safe error message
+      const msgText =
+        error?.response?.data?.message || error?.message || "Network error";
+      setMessages((prev) => [
+        ...prev,
+        { type: "ai", status: "error", text: msgText, data: error?.response?.data },
+      ]);
+    } finally {
+      setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center p-6">
-      {/* Header */}
-      <h1 className="text-4xl font-bold mb-8 text-center text-blue-400">
-        Talk2Data Chat Interface
-      </h1>
+    <div className="chat-container">
+      <header className="chat-header">
+        <h1>Talk2Data Interactive Chat</h1>
+      </header>
 
-      {/* Query Form */}
-      <form
-        onSubmit={handleSubmit}
-        className="w-full max-w-3xl bg-gray-900 border border-gray-800 p-6 rounded-2xl shadow-xl"
-      >
+      <div className="chat-window">
+        {messages.map((msg, index) => {
+          if (msg.type === "user") {
+            return (
+              <div key={index} className="message user-msg">
+                <p>{msg.text}</p>
+              </div>
+            );
+          }
+
+          if (msg.type === "ai" && msg.status === "success") {
+            return <AIMessage key={index} msg={msg} />;
+          }
+
+          if (msg.type === "ai" && msg.status === "error") {
+            return (
+              <div key={index} className="message ai-msg error-style">
+                <h3>⚠️ Query Error</h3>
+                <p>{msg.text}</p>
+              </div>
+            );
+          }
+
+          return null;
+        })}
+
+        {loading && (
+          <div className="message ai-msg typing">
+            <div className="typing-dots">
+              <span></span>
+              <span></span>
+              <span></span>
+            </div>
+          </div>
+        )}
+        <div ref={chatEndRef} />
+      </div>
+
+      {/* Query Input */}
+      <form className="chat-input" onSubmit={handleSubmit}>
         <textarea
-          className="w-full p-4 rounded-lg bg-gray-800 border border-gray-700 text-white focus:outline-none focus:border-blue-500"
-          rows="4"
-          placeholder="Type your query (e.g. Show me each dish and its calories)..."
+          placeholder="Ask your query (e.g., Show me each dish and its calories)..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         ></textarea>
-
-        <button
-          type="submit"
-          className={`mt-4 w-full bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-semibold transition ${
-            loading ? "opacity-70 cursor-not-allowed" : ""
-          }`}
-          disabled={loading}
-        >
-          {loading ? "Processing..." : "Send Query"}
+        <button type="submit" disabled={loading}>
+          {loading ? "Processing..." : "Send"}
         </button>
       </form>
-
-      {/* Results */}
-      {response && (
-        <div className="w-full max-w-5xl mt-10 bg-gray-900 p-8 rounded-2xl border border-gray-800 shadow-xl">
-          {response.status === "success" ? (
-            <>
-              <p className="text-green-400 font-semibold mb-4 text-lg">
-                ✅ Query executed successfully
-              </p>
-              <p className="text-gray-300 mb-4">
-                <strong>Selected Databases:</strong>{" "}
-                {response.selected_databases.join(", ")}
-              </p>
-
-              {/* Excel Download */}
-              {mergedData.length > 0 && (
-                <button
-                  className="bg-green-600 hover:bg-green-700 px-5 py-2 rounded-lg text-white font-medium mb-6"
-                  onClick={() => downloadExcel(mergedData)}
-                >
-                  Download Excel
-                </button>
-              )}
-
-              {/* === Dynamic Chart Controls === */}
-              {mergedData.length > 0 && (
-                <div className="bg-gray-950 p-6 rounded-2xl mt-6">
-                  <h2 className="text-2xl text-blue-400 font-semibold mb-4">
-                    📊 Visual Insights
-                  </h2>
-
-                  <div className="flex flex-wrap gap-4 mb-6">
-                    <select
-                      className="bg-gray-800 border border-gray-700 rounded-lg p-2"
-                      value={chartType}
-                      onChange={(e) => setChartType(e.target.value)}
-                    >
-                      <option value="bar">Bar Chart</option>
-                      <option value="line">Line Chart</option>
-                      <option value="pie">Pie Chart</option>
-                    </select>
-
-                    <select
-                      className="bg-gray-800 border border-gray-700 rounded-lg p-2"
-                      value={xKey}
-                      onChange={(e) => setXKey(e.target.value)}
-                    >
-                      <option value="">Select X-Axis</option>
-                      {stringKeys.map((key) => (
-                        <option key={key} value={key}>
-                          {key}
-                        </option>
-                      ))}
-                    </select>
-
-                    <select
-                      className="bg-gray-800 border border-gray-700 rounded-lg p-2"
-                      value={yKey}
-                      onChange={(e) => setYKey(e.target.value)}
-                    >
-                      <option value="">Select Y-Axis</option>
-                      {numericKeys.map((key) => (
-                        <option key={key} value={key}>
-                          {key}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="h-96 bg-gray-900 rounded-xl p-4 border border-gray-800 shadow-md">
-                    <ResponsiveContainer width="100%" height="100%">
-                      {renderChart()}
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              )}
-            </>
-          ) : (
-            <p className="text-red-400">❌ {response.message}</p>
-          )}
-        </div>
-      )}
     </div>
   );
 }

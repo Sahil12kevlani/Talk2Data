@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.routes import router as api_router
+#from app.api.routes import router as api_router
 from app.api.multidb_routes import router as multidb_router
 
 app = FastAPI(title="Talk2Data Backend")
@@ -16,4 +16,4 @@ app.add_middleware(
 
 # ✅ Include routers
 app.include_router(multidb_router, prefix="/api")
-app.include_router(api_router, prefix="/api")
+#app.include_router(api_router, prefix="/api")

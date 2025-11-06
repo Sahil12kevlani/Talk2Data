@@ -67,32 +67,45 @@ async def build_dynamic_db_summaries(max_lines_per_db: int = 50):
 
 # -------------------------- MERGE LAYER --------------------------
 def merge_results_across_dbs(results: dict):
-    """
-    Merge results across multiple databases intelligently by matching common keys (DishName, DishCode, etc.)
-    """
     if not results or len(results) <= 1:
-        return None  # No merging needed if only one DB
+        return None
+
+    # find common columns across all result sets
+    db_columns = [set(row.keys()) for res in results.values() if res["rows"] for row in res["rows"][:1]]
+    common_cols = set.intersection(*db_columns) if db_columns else set()
+
+    # pick a key column to merge on (priority order)
+    possible_keys = ["DishName", "DishCode", "DishID", "SupplierName", "ArticleNumber", "CuisineName"]
+    key = next((k for k in possible_keys if k in common_cols), None)
+
+    # fallback: use first column of the first result if nothing matches
+    if not key and db_columns:
+        key = list(next(iter(db_columns)))[0]
+
+    if not key:
+        return None  # still nothing to merge by
 
     merged = {}
     for db_name, data in results.items():
         for row in data["rows"]:
-            # Choose best key to merge by
-            key = row.get("DishName") or row.get("DishCode") or row.get("DishID")
-            if not key:
+            merge_key = row.get(key)
+            if not merge_key:
                 continue
 
-            if key not in merged:
-                merged[key] = {"_source_dbs": [db_name]}
+            if merge_key not in merged:
+                merged[merge_key] = {"_source_dbs": set(), **row}
             else:
-                merged[key]["_source_dbs"].append(db_name)
+                merged[merge_key]["_source_dbs"].add(db_name)
+                for k, v in row.items():
+                    if k not in merged[merge_key] or merged[merge_key][k] in (None, "", "N/A"):
+                        merged[merge_key][k] = v
 
-            # Merge fields (without overwriting existing)
-            for k, v in row.items():
-                if k not in merged[key] or merged[key][k] in (None, "", "N/A"):
-                    merged[key][k] = v
+    flat = []
+    for val in merged.values():
+        val["_source_dbs"] = list(val["_source_dbs"])
+        flat.append(val)
 
-    # Flatten merged data
-    return list(merged.values())
+    return flat
 
 
 # -------------------------- MAIN ROUTE --------------------------
@@ -118,27 +131,43 @@ async def multi_db_query(query: str):
             schema_text = schema_info["text"]
 
             # 💡 Better prompting for Groq model
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        f"You are a highly skilled SQL generator. You are working with the database '{db_name}'.\n\n"
-                        "Below is the **live schema** of the database (Microsoft SQL Server syntax):\n"
-                        f"{schema_text}\n\n"
-                        "Your task: write an accurate SQL SELECT query that answers the user's request.\n"
-                        "⚙️ RULES:\n"
-                        "- Only use columns and tables that are present in the schema above.\n"
-                        "- Always double-check column names and relationships before using them.\n"
-                        "- Prefer JOINs where foreign keys exist.\n"
-                        "- Do NOT invent or assume column names.\n"
-                        "- If you cannot find the necessary columns, output exactly: SELECT 1 AS no_data;"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"User request: {query}\nGenerate the most appropriate SQL query using tables in '{db_name}'.",
-                },
-            ]
+            messages = [{
+                            "role": "system",
+                            "content": (
+                                f"You are an intelligent data assistant and SQL expert. "
+                                f"You are currently connected to the Microsoft SQL Server database '{db_name}'.\n\n"
+                                "Below is the **live database schema** you can use:\n"
+                                f"{schema_text}\n\n"
+                                "🎯 **Your Role and Behavior:**\n"
+                                "- You help users query, analyze, and summarize data across multiple databases.\n"
+                                "- You can write SQL queries based strictly on the schema above.\n"
+                                "- If the user's request is vague, incomplete, or underspecified, make reasonable assumptions and generate the best possible SQL query in a single response — do not ask clarifying questions.\n"
+                                "- You may also suggest logical defaults. For example:\n"
+                                "  • If the user says 'Show me order details' but doesn’t specify columns — ask whether to show order date, customer, or total.\n"
+                                "  • If they say 'Show me customer insights', suggest summarizing total orders, total spend, or average delivery time.\n"
+                                "  • If unsure which table to use, explain your reasoning and propose an option.\n\n"
+                                "⚙️ **Rules for SQL Generation:**\n"
+                                "- Use only columns and tables from the schema provided above.\n"
+                                "- Double-check column and relationship names before using them.\n"
+                                "- Prefer JOINs where foreign keys exist.\n"
+                                "- Avoid assumptions; if the necessary data doesn’t exist, return: SELECT 1 AS no_data;\n"
+                                "- Keep queries safe, readable, and use aliases where appropriate.\n\n"
+                                "🧭 **Error Handling and Clarifications:**\n"
+                                "- If something in the user request seems missing or unclear, respond with a short clarifying question first.\n"
+                                "- If a user query can be answered multiple ways (e.g., sales per product or per city), suggest both options.\n"
+                                "- Always keep your tone professional, friendly, and concise."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"User request: {query}\n\n"
+                                "Generate the SQL query directly based on your best understanding of the request. Do not ask follow-up questions."
+                                "If not, ask a clarifying question before proceeding."
+                            ),
+                        },
+                    ]
+
 
             # Call Groq model
             completion = await run_in_threadpool(lambda: client.chat.completions.create(
@@ -162,41 +191,11 @@ async def multi_db_query(query: str):
                     raise ValueError(f"Invalid SQL generated for {db_name}: {sql_query}")
 
                 def fix_sql_syntax_for_mssql(sql: str) -> str:
-                    """
-                    Automatically fix known SQL generation errors such as subquery type mismatches
-                    and schema prefix issues.
-                    """
-                    # 🩹 1. Fix varchar-int mismatch (DishCode vs DishID)
-                    sql = re.sub(
-                        r"dm\.DishCode\s*=\s*\(SELECT\s+DishID\s+FROM\s+dishes\s+WHERE\s+DishName\s*=\s*dm\.DishName\)",
-                        "dm.DishCode = d.DishCode",
-                        sql,
-                        flags=re.IGNORECASE,
-                    )
-
-                    # 🩹 2. Also handle alias form (SELECT d.DishID FROM dishes d)
-                    sql = re.sub(
-                        r"dm\.DishCode\s*=\s*\(SELECT\s+d\.DishID\s+FROM\s+dishes\s+d\s+WHERE\s+d\.DishName\s*=\s*dm\.DishName\)",
-                        "dm.DishCode = d.DishCode",
-                        sql,
-                        flags=re.IGNORECASE,
-                    )
-
-                    # 🩹 3. Fix for accidental DishCode-to-DishID joins (common AI mistake)
-                    sql = re.sub(
-                        r"ON\s+dm\.DishCode\s*=\s*ni\.DishID",
-                        "ON d.DishID = ni.DishID",
-                        sql,
-                        flags=re.IGNORECASE,
-                    )
-
-                    # 🩹 4. Add schema prefixes for cross-database queries
+                    # add schema prefixes only (safe)
                     sql = sql.replace("talk2data.", "talk2data.dbo.")
                     sql = sql.replace("fooddb.", "fooddb.dbo.")
-
-                    # 🩹 5. Cleanup double spaces / formatting
+                    # collapse whitespace
                     sql = " ".join(sql.split())
-
                     return sql
 
 
@@ -258,8 +257,8 @@ async def multi_db_query(query: str):
             "input": query,
             "selected_databases": selected_dbs,
             "results": results,
-            "merged_results": merged_output or [],
-            "merge_reasoning": merged_suggestion,
+            "merged_results": merged_output if isinstance(merged_output, list) else [],
+            "merge_reasoning": merged_suggestion or "(no merge reasoning)",
         }
 
     except Exception as e:
