@@ -6,8 +6,6 @@ __pycache__/
 venv/
 .venv/
 
-# Environment
-.env
 
 # Node / Frontend
 Talk2Data Frontend/node_modules/
