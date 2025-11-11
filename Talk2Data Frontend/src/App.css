@@ -18,7 +18,7 @@
 
 /* Header */
 .chat-header {
-  background-color: var(--bg-medium);
+  background-color: var(--bg-medium);                        
   padding: 0.5rem;
   text-align: center;
   font-size: 0.7rem;

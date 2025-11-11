@@ -78,9 +78,7 @@ function renderChart(mergedData, chartType, xKey, yKey) {
 }
 
 // 🧠 AI Message Component (handles table + chart)
-// - Keeps its own hook state safely (component-level)
 function AIMessage({ msg }) {
-  // Guarantee merged_results is an array
   const mergedData = Array.isArray(msg.data?.merged_results)
     ? msg.data.merged_results
     : [];
@@ -97,7 +95,6 @@ function AIMessage({ msg }) {
   const [xKey, setXKey] = useState(stringKeys[0] || "");
   const [yKey, setYKey] = useState(numericKeys[0] || "");
 
-  // keep selectors in sync when data changes
   useEffect(() => {
     if (!xKey && stringKeys[0]) setXKey(stringKeys[0]);
     if (!yKey && numericKeys[0]) setYKey(numericKeys[0]);
@@ -136,7 +133,9 @@ function AIMessage({ msg }) {
       </p>
 
       {mergedData.length === 0 && (
-        <p className="no-data">No matching records found in any selected databases.</p>
+        <p className="no-data">
+          No matching records found in any selected databases.
+        </p>
       )}
 
       {mergedData.length > 0 && (
@@ -147,7 +146,6 @@ function AIMessage({ msg }) {
             </button>
           </div>
 
-          {/* Data Table */}
           <div className="table-container">
             <table className="data-table">
               <thead>
@@ -161,7 +159,11 @@ function AIMessage({ msg }) {
                 {mergedData.slice(0, 50).map((row, i) => (
                   <tr key={i}>
                     {keys.map((k, j) => (
-                      <td key={j}>{row[k] === null || row[k] === undefined ? "" : String(row[k])}</td>
+                      <td key={j}>
+                        {row[k] === null || row[k] === undefined
+                          ? ""
+                          : String(row[k])}
+                      </td>
                     ))}
                   </tr>
                 ))}
@@ -169,7 +171,6 @@ function AIMessage({ msg }) {
             </table>
           </div>
 
-          {/* Chart Controls */}
           <div className="chart-controls">
             <select
               value={chartType}
@@ -197,7 +198,6 @@ function AIMessage({ msg }) {
             </select>
           </div>
 
-          {/* Chart Display */}
           <div className="chart-box">
             <ResponsiveContainer width="100%" height={300}>
               {renderChart(mergedData, chartType, xKey, yKey)}
@@ -216,6 +216,15 @@ function App() {
   const [loading, setLoading] = useState(false);
   const chatEndRef = useRef(null);
 
+  // ✅ Phase 1: Session ID management
+  const [sessionId] = useState(() => {
+    const existing = localStorage.getItem("sessionId");
+    if (existing) return existing;
+    const newId = crypto.randomUUID();
+    localStorage.setItem("sessionId", newId);
+    return newId;
+  });
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -231,13 +240,11 @@ function App() {
     setLoading(true);
 
     try {
-      // NOTE: backend expects query as query param in this frontend.
-      // If your backend accepts JSON POST body, change to axios.post(url, { query })
-      const res = await axios.post(
-        `http://127.0.0.1:8000/api/multi-db-query?query=${encodeURIComponent(
-          query
-        )}`
-      );
+      // ✅ Send sessionId with every request (Phase 1)
+      const res = await axios.post("http://127.0.0.1:8000/api/multi-db-query", {
+        query,
+        session_id: sessionId,
+      });
 
       const aiMsg = {
         type: "ai",
@@ -247,12 +254,16 @@ function App() {
       };
       setMessages((prev) => [...prev, aiMsg]);
     } catch (error) {
-      // safe error message
       const msgText =
         error?.response?.data?.message || error?.message || "Network error";
       setMessages((prev) => [
         ...prev,
-        { type: "ai", status: "error", text: msgText, data: error?.response?.data },
+        {
+          type: "ai",
+          status: "error",
+          text: msgText,
+          data: error?.response?.data,
+        },
       ]);
     } finally {
       setLoading(false);
@@ -263,6 +274,7 @@ function App() {
     <div className="chat-container">
       <header className="chat-header">
         <h1>Talk2Data Interactive Chat</h1>
+        <small className="session-tag">Session ID: {sessionId}</small>
       </header>
 
       <div className="chat-window">
@@ -277,6 +289,14 @@ function App() {
 
           if (msg.type === "ai" && msg.status === "success") {
             return <AIMessage key={index} msg={msg} />;
+          }
+
+          if (msg.type === "ai" && msg.status === "info") {
+            return (
+              <div key={index} className="message ai-msg">
+                <p>{msg.text}</p>
+              </div>
+            );
           }
 
           if (msg.type === "ai" && msg.status === "error") {
@@ -303,7 +323,6 @@ function App() {
         <div ref={chatEndRef} />
       </div>
 
-      {/* Query Input */}
       <form className="chat-input" onSubmit={handleSubmit}>
         <textarea
           placeholder="Ask your query (e.g., Show me each dish and its calories)..."
