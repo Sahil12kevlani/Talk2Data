@@ -26,4 +26,3 @@ dist/
 build/
 
 # Poetry
-poetry.lock
